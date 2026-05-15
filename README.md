@@ -33,8 +33,11 @@ Indonesian UMKM owners (64M+ businesses, contributing 61% of GDP) face a daily o
 
 ---
 
-## ✨ The Solution📸 1 photo of shelf → ⚡ 90 seconds → ✅ Full restock workflow complete
-Zero human intervention
+## ✨ The Solution
+
+> 📸 1 photo of shelf → ⚡ 90 seconds → ✅ Full restock workflow complete
+>
+> Zero human intervention
 
 ### The Agents
 
@@ -57,35 +60,26 @@ Zero human intervention
 
 ## 🏗️ Architecture
 
-```mermaidgraph TB
-subgraph "User Interface"
-TG[📱 Telegram Bot]
-endsubgraph "Orchestration Layer"
-    ORCH[🎭 Orchestrator]
-endsubgraph "Agent Layer - Claude Sonnet 4.6"
-    IS[🔍 Inventory Sentinel]
-    PN[💼 Procurement Negotiator]
-    CC[📱 Customer Concierge]
-endsubgraph "Tool Layer"
-    DB[(SQLite DB)]
-    LLM[Sumopod LLM API]
-    DOKU[💳 DOKU MCP Server]
-    VIS[Claude Vision API]
-endTG -->|photo or /restock| ORCH
-ORCH --> IS
-IS -->|critical items| PN
-PN -->|PO + VA| CC
-CC -->|notifications| TGIS <--> DB
-IS <--> VIS
-PN <--> DB
-PN <--> LLM
-PN <--> DOKU
-CC <--> DB
-CC <--> LLMstyle IS fill:#e1f5ff
-style PN fill:#fff4e1
-style CC fill:#e8f5e9
-style DOKU fill:#ffe0e0
-style ORCH fill:#f3e5f5
+```mermaid
+graph TB
+    TG[Telegram Bot] -->|photo or /restock| ORCH[Orchestrator]
+    ORCH --> IS[Inventory Sentinel]
+    IS -->|critical items| PN[Procurement Negotiator]
+    PN -->|PO + VA| CC[Customer Concierge]
+    CC -->|notifications| TG
+    IS <--> DB[(SQLite)]
+    IS <--> VIS[Claude Vision]
+    PN <--> DB
+    PN <--> LLM[Sumopod LLM]
+    PN <--> DOKU[DOKU MCP Server]
+    CC <--> DB
+    CC <--> LLM
+    style IS fill:#e1f5ff
+    style PN fill:#fff4e1
+    style CC fill:#e8f5e9
+    style DOKU fill:#ffe0e0
+    style ORCH fill:#f3e5f5
+```
 
 ---
 
@@ -98,7 +92,7 @@ WarungOS uses DOKU MCP Server as the autonomous payment layer — not REST API c
 - **Multi-bank support** — tries BCA/BRI/BNI/Mandiri channels for resilience
 - **Graceful fallback** — when DOKU sandbox VA service is intermittent, agent provides realistic VA for demo continuity
 - **Schema-compliant** — uses toolRequest wrapper exactly per DOKU MCP spec
-- **Failure escalation** — when payment fails across all channels, agent halts workflow and escalates with actionable recommendations
+- **Failure escalation** — when payment fails across all channels, agent halts workflow with actionable recommendations
 
 See `tools/doku_mcp.py` for the MCP client implementation.
 
@@ -107,12 +101,15 @@ See `tools/doku_mcp.py` for the MCP client implementation.
 ## 🎬 Edge Case Demos (Autonomy Showcase)
 
 ### 1. Supplier Rejection — Autonomous Fallback Chain
+
 Armed via `/scenario_reject`. Agent picks Supplier #1, gets rejected, autonomously excludes #1, picks Supplier #2 with new trade-off reasoning, workflow continues. Zero human intervention.
 
 ### 2. Payment Service Failure — Graceful Escalation
-Armed via `/scenario_payfail`. DOKU MCP fails across all channels. Agent halts workflow, escalates to owner with 3 actionable recommendations + manual transfer amount. Customer Concierge NOT triggered — agent refuses to make promises it cannot keep.
+
+Armed via `/scenario_payfail`. DOKU MCP fails across all channels. Agent halts workflow, escalates to owner with 3 actionable recommendations + manual transfer amount. Customer Concierge NOT triggered.
 
 ### 3. Vision Quality Reject
+
 Photo with poor lighting/focus. Vision agent classifies overall_quality=poor and asks user to re-upload with specific guidance.
 
 ---
@@ -133,15 +130,27 @@ Photo with poor lighting/focus. Vision agent classifies overall_quality=poor and
 
 ## 🚀 Quick Start
 
-```bashgit clone https://github.com/mshadianto/OpenClaw2026_MSHadianto_WarungOS.git
-cd OpenClaw2026_MSHadianto_WarungOSpython3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txtcp .env.example .env
-nano .env  # fill credentialssqlite3 data/warungos.db < data/seed.sql
+```bash
+git clone https://github.com/mshadianto/OpenClaw2026_MSHadianto_WarungOS.git
+cd OpenClaw2026_MSHadianto_WarungOS
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+nano .env
+
+sqlite3 data/warungos.db < data/seed.sql
 python3 bot.py
+```
 
 ---
 
-## 📁 Project Structurewarungos/
+## 📁 Project Structure
+
+```text
+warungos/
 ├── agents/
 │   ├── inventory_sentinel.py     # Vision + forecasting
 │   ├── procurement_negotiator.py # Multi-criteria + DOKU MCP
@@ -157,6 +166,7 @@ python3 bot.py
 ├── bot.py                        # Telegram entry point
 ├── requirements.txt
 └── README.md
+```
 
 ---
 
@@ -190,7 +200,7 @@ python3 bot.py
 
 ## 🙋 About
 
-Built solo by [M Shadianto](https://github.com/mshadianto) during 12-hour OpenClaw Agenthon 2026 build sprint.
+Built solo by [MS Hadianto](https://github.com/mshadianto) during 12-hour OpenClaw Agenthon 2026 build sprint.
 
 ---
 
