@@ -84,7 +84,8 @@ def create_virtual_account(
     invoice_number: str,
     amount_idr: int,
     customer_name: str = "WarungOS Customer",
-    customer_email: str = "[email protected]"
+    customer_email: str = "[email protected]",
+    force_fail: bool = False
 ) -> dict:
     """
     Create a Virtual Account via DOKU MCP Server.
@@ -96,6 +97,15 @@ def create_virtual_account(
     The MCP call signature and schema match DOKU production. See sandbox
     health check log for verified connectivity to live MCP server.
     """
+    if force_fail:
+        return {
+            "success": False,
+            "source": "forced_failure",
+            "error": "DOKU payment service unavailable across all channels (BCA/BRI/BNI/Mandiri). Connection timeout after 4 retries.",
+            "invoice_number": invoice_number,
+            "amount": amount_idr,
+        }
+    
     channels_to_try = [
         "BANK_TRANSFER_BCA",
         "BANK_TRANSFER_BRI",

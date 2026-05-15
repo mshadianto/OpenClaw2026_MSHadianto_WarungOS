@@ -235,11 +235,19 @@ def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty
     db.log_agent_action(AGENT_NAME, "po_db_created", {"po_number": po_number, "amount": total_cost})
     
     # 2. Call DOKU MCP to create Virtual Account (this is THE autonomous payment step)
-    db.log_agent_action(AGENT_NAME, "doku_mcp_calling", {"po_number": po_number})
+    force_pay_fail = _SCENARIO_FLAGS.get("force_payment_fail", False)
+    if force_pay_fail:
+        _SCENARIO_FLAGS["force_payment_fail"] = False  # consume flag
+    
+    db.log_agent_action(AGENT_NAME, "doku_mcp_calling", {
+        "po_number": po_number,
+        "force_fail_scenario": force_pay_fail,
+    })
     va_response = doku_mcp.create_virtual_account(
         invoice_number=po_number,
         amount_idr=total_cost,
         customer_name=supplier_name,
+        force_fail=force_pay_fail,
     )
     
     # 3. Extract VA data
@@ -257,6 +265,8 @@ def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty
     # 4. Update PO with VA number
     db.execute("UPDATE purchase_orders SET doku_va_number = ? WHERE id = ?", (va_number, po_id))
     
+    payment_ok = va_response.get("success", False) and va_response.get("source") != "forced_failure"
+    
     po = {
         "po_id": po_id,
         "po_number": po_number,
@@ -264,11 +274,13 @@ def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty
         "supplier_name": supplier_name,
         "items": items_with_qty,
         "total_amount": total_cost,
-        "status": "PENDING_PAYMENT",
+        "status": "PENDING_PAYMENT" if payment_ok else "PAYMENT_FAILED",
         "eta_estimate": "1-2 hari kerja",
-        "doku_va_number": va_number,
-        "doku_bank": bank,
+        "doku_va_number": va_number if payment_ok else None,
+        "doku_bank": bank if payment_ok else None,
         "doku_source": va_response.get("source"),
+        "payment_success": payment_ok,
+        "payment_error": va_response.get("error") if not payment_ok else None,
     }
     
     db.log_agent_action(AGENT_NAME, "purchase_order_created", po)

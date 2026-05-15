@@ -89,7 +89,23 @@ async def run_full_restock_workflow(send_telegram_message):
         
         await send_telegram_message(procurement_negotiator.format_for_telegram(decision, po))
         
-        # Check supplier response (simulated in demo)
+        # PAYMENT FAILURE CHECK — escalate to owner if DOKU couldn't process
+        if not po.get("payment_success", True):
+            await send_telegram_message(
+                f"🚨 Payment Service Failure Detected\n\n"
+                f"❌ DOKU Virtual Account gagal di semua channel:\n"
+                f"{(po.get('payment_error') or 'Unknown error')[:200]}\n\n"
+                f"🤖 Agent Decision: Workflow di-pause untuk PO {po['po_number']}.\n\n"
+                f"💡 Recommended Actions:\n"
+                f"  1. Verifikasi DOKU service status di dashboard\n"
+                f"  2. Coba payment manual: transfer bank Rp {po['total_amount']:,}\n"
+                f"  3. Retry workflow setelah service pulih: /restock\n\n"
+                f"📞 Escalating to owner..."
+            )
+            summary["outcome"] = "escalated_payment_failure"
+            summary["po"] = po
+            return summary
+        
         confirmation = await asyncio.to_thread(
             procurement_negotiator.simulate_supplier_response,
             supplier_id, po["po_number"]
