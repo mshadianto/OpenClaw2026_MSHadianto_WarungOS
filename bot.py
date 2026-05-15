@@ -6,7 +6,8 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
-from agents import orchestrator
+from agents import orchestrator, inventory_sentinel
+import base64
 
 load_dotenv()
 logging.basicConfig(
@@ -111,6 +112,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Error: {str(e)[:200]}")
 
 
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Receive shelf photo, run Vision OCR, then auto-trigger restock workflow.
+    
+    This is the headline UX: 1 photo → autonomous multi-agent workflow.
+    """
+    chat_id = update.effective_chat.id
+    
+    async def send(text: str):
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text=text)
+    
+    await send("📸 *Foto diterima.* Inventory Sentinel sedang menganalisis...")
+    
+    # 1. Download photo from Telegram
+    photo = update.message.photo[-1]  # highest resolution
+    photo_file = await photo.get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+    image_b64 = base64.b64encode(bytes(photo_bytes)).decode()
+    
+    # 2. Run vision analysis
+    import asyncio
+    vision_result = await asyncio.to_thread(
+        inventory_sentinel.analyze_shelf_photo, image_b64, "jpeg"
+    )
+    
+    if "error" in vision_result:
+        await send(f"⚠️ Vision analysis gagal: {vision_result['error']}")
+        return
+    
+    if vision_result.get("overall_quality") == "poor":
+        await send(
+            "🔴 *Kualitas foto kurang baik.*\n\n"
+            "Mohon kirim ulang foto dengan:\n"
+            "• Pencahayaan cukup\n"
+            "• Fokus ke rak/stok\n"
+            "• Jarak dekat (1-2 meter)"
+        )
+        return
+    
+    # 3. Update inventory DB from vision
+    db_update = await asyncio.to_thread(
+        inventory_sentinel.update_inventory_from_vision, vision_result
+    )
+    
+    # 4. Show vision result
+    await send(inventory_sentinel.format_vision_result(vision_result, db_update))
+    
+    # 5. Auto-trigger full workflow
+    await send("\n🤖 *Auto-triggering restock workflow...*")
+    try:
+        summary = await orchestrator.run_full_restock_workflow(send)
+        logger.info(f"Photo-triggered workflow completed: {summary.get('outcome')}")
+    except Exception as e:
+        logger.exception("Photo workflow error")
+        await send(f"⚠️ Workflow error: {str(e)[:300]}")
+
+
+
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     app = Application.builder().token(token).build()
@@ -120,6 +183,7 @@ def main():
     app.add_handler(CommandHandler("restock", restock_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🦞 WarungOS bot starting — Multi-Agent System ready")

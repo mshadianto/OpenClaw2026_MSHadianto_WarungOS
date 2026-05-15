@@ -145,3 +145,171 @@ def format_for_telegram(result: dict) -> str:
             lines.append("→ Akan kirim ke *Procurement Negotiator*...")
     
     return "\n".join(lines)
+
+
+def analyze_shelf_photo(image_base64: str, image_format: str = "jpeg") -> dict:
+    """
+    Analyze a photo of a warung shelf using Claude Vision via Sumopod.
+    
+    Args:
+        image_base64: base64-encoded image content
+        image_format: 'jpeg' or 'png'
+    
+    Returns: structured detection result with items, quantities, confidence.
+    """
+    db.log_agent_action(AGENT_NAME, "vision_analysis_started")
+    
+    from openai import OpenAI
+    import os
+    client = OpenAI(
+        api_key=os.getenv("SUMOPOD_API_KEY"),
+        base_url=os.getenv("SUMOPOD_BASE_URL"),
+    )
+    
+    vision_prompt = """Analisis foto rak/stok warung Indonesia ini. Identifikasi tiap item yang terlihat dan estimasi jumlahnya.
+
+Output WAJIB format JSON valid (tanpa markdown wrapper):
+{
+  "items_detected": [
+    {
+      "name": "Nama Item (Bahasa Indonesia, format Title Case)",
+      "estimated_quantity": angka,
+      "unit": "kg | butir | liter | bungkus | botol | dus",
+      "confidence": 0.0-1.0
+    }
+  ],
+  "overall_quality": "good | fair | poor",
+  "summary": "1-kalimat ringkasan apa yang terlihat di foto"
+}
+
+PENTING:
+- Pakai nama item sederhana yang umum di warung (Ayam Fillet, Cabai Merah, Telur Ayam, Beras Premium, dll)
+- Confidence < 0.5 berarti gak yakin, jangan dimasukin
+- Jika foto blur/gelap/bukan rak warung, set overall_quality=poor
+
+Output HANYA JSON.
+"""
+    
+    try:
+        completion = client.chat.completions.create(
+            model=os.getenv("SUMOPOD_MODEL", "claude-sonnet-4-6"),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": vision_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/{image_format};base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1500,
+            temperature=0.3,
+        )
+        response = completion.choices[0].message.content
+    except Exception as e:
+        db.log_agent_action(AGENT_NAME, "vision_error", {"error": str(e)})
+        return {"error": f"Vision call failed: {e}"}
+    
+    # Parse JSON
+    try:
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        db.log_agent_action(AGENT_NAME, "vision_parse_error", {"error": str(e), "raw": response[:300]})
+        return {"error": "JSON parse failed", "raw": response}
+    
+    # Filter low-confidence items
+    items = [
+        item for item in result.get("items_detected", [])
+        if item.get("confidence", 0) >= 0.5
+    ]
+    result["items_detected"] = items
+    result["high_confidence_count"] = len(items)
+    
+    db.log_agent_action(AGENT_NAME, "vision_analysis_complete", {
+        "items_count": len(items),
+        "quality": result.get("overall_quality")
+    })
+    
+    return result
+
+
+def update_inventory_from_vision(vision_result: dict) -> dict:
+    """
+    Update the inventory table based on vision detection.
+    Updates existing items, ignores new ones (for safety in demo).
+    """
+    if "error" in vision_result:
+        return {"updated": 0, "error": vision_result["error"]}
+    
+    updated = []
+    skipped = []
+    
+    for item in vision_result.get("items_detected", []):
+        name = item["name"]
+        qty = int(item["estimated_quantity"])
+        
+        # Check if item exists in inventory
+        existing = db.query_all("SELECT * FROM inventory WHERE LOWER(item_name) = LOWER(?)", (name,))
+        if existing:
+            db.execute(
+                "UPDATE inventory SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (qty, existing[0]["id"])
+            )
+            updated.append({"name": name, "new_stock": qty, "old_stock": existing[0]["current_stock"]})
+        else:
+            skipped.append(name)
+    
+    db.log_agent_action(AGENT_NAME, "inventory_updated_from_vision", {
+        "updated_count": len(updated),
+        "skipped": skipped
+    })
+    
+    return {"updated": updated, "skipped": skipped}
+
+
+def format_vision_result(vision_result: dict, db_update: dict) -> str:
+    """Format vision detection result for Telegram."""
+    if "error" in vision_result:
+        return f"⚠️ Vision analysis error: {vision_result['error']}"
+    
+    quality = vision_result.get("overall_quality", "unknown")
+    quality_emoji = {"good": "✅", "fair": "🟡", "poor": "🔴"}.get(quality, "⚪")
+    
+    lines = [
+        f"📸 *Inventory Sentinel — Vision Analysis*",
+        "",
+        f"{quality_emoji} Kualitas foto: *{quality}*",
+        f"📋 {vision_result.get('summary', '')}",
+        "",
+        f"*Item terdeteksi:* {vision_result.get('high_confidence_count', 0)}"
+    ]
+    
+    for item in vision_result.get("items_detected", []):
+        conf_pct = int(item.get("confidence", 0) * 100)
+        lines.append(
+            f"• {item['name']}: ~{item['estimated_quantity']} {item['unit']} "
+            f"(confidence {conf_pct}%)"
+        )
+    
+    if db_update.get("updated"):
+        lines.append("")
+        lines.append(f"💾 *{len(db_update['updated'])} item di-update di database:*")
+        for u in db_update["updated"][:5]:
+            lines.append(f"  - {u['name']}: {u['old_stock']} → {u['new_stock']}")
+    
+    if db_update.get("skipped"):
+        lines.append("")
+        lines.append(f"_({len(db_update['skipped'])} item baru di-skip untuk safety: {', '.join(db_update['skipped'][:3])}...)_")
+    
+    return "\n".join(lines)
