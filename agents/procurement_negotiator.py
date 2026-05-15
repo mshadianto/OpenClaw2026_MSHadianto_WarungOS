@@ -14,7 +14,7 @@ import json
 import random
 import string
 from datetime import datetime
-from tools import db, llm
+from tools import db, llm, doku_mcp
 
 AGENT_NAME = "💼 Procurement Negotiator"
 
@@ -167,14 +167,45 @@ Output HANYA JSON.
 
 
 def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty: dict, total_cost: int) -> dict:
-    """Create PO record in database."""
+    """
+    Create PO record + invoke DOKU MCP to generate Virtual Account for B2B payment.
+    
+    This is the integration point with DOKU MCP Server.
+    The agent autonomously creates a payable invoice for the supplier.
+    """
     po_number = _generate_po_number()
     items_json = json.dumps(items_with_qty, ensure_ascii=False)
     
+    # 1. Create PO in our DB
     po_id = db.execute("""
         INSERT INTO purchase_orders (po_number, supplier_id, items_json, total_amount, status)
         VALUES (?, ?, ?, ?, 'PENDING')
     """, (po_number, supplier_id, items_json, total_cost))
+    
+    db.log_agent_action(AGENT_NAME, "po_db_created", {"po_number": po_number, "amount": total_cost})
+    
+    # 2. Call DOKU MCP to create Virtual Account (this is THE autonomous payment step)
+    db.log_agent_action(AGENT_NAME, "doku_mcp_calling", {"po_number": po_number})
+    va_response = doku_mcp.create_virtual_account(
+        invoice_number=po_number,
+        amount_idr=total_cost,
+        customer_name=supplier_name,
+    )
+    
+    # 3. Extract VA data
+    va_data = va_response.get("data", {})
+    va_number = va_data.get("virtualAccountNumber") or va_data.get("va_number") or "PENDING"
+    bank = va_data.get("bank", "BCA")
+    
+    db.log_agent_action(AGENT_NAME, "doku_va_created", {
+        "po_number": po_number,
+        "va_number": va_number,
+        "bank": bank,
+        "source": va_response.get("source"),
+    })
+    
+    # 4. Update PO with VA number
+    db.execute("UPDATE purchase_orders SET doku_va_number = ? WHERE id = ?", (va_number, po_id))
     
     po = {
         "po_id": po_id,
@@ -183,8 +214,11 @@ def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty
         "supplier_name": supplier_name,
         "items": items_with_qty,
         "total_amount": total_cost,
-        "status": "PENDING",
-        "eta_estimate": "1-2 hari kerja"
+        "status": "PENDING_PAYMENT",
+        "eta_estimate": "1-2 hari kerja",
+        "doku_va_number": va_number,
+        "doku_bank": bank,
+        "doku_source": va_response.get("source"),
     }
     
     db.log_agent_action(AGENT_NAME, "purchase_order_created", po)
@@ -214,9 +248,15 @@ def format_for_telegram(decision: dict, po: dict = None) -> str:
     
     if po:
         lines.append("")
-        lines.append(f"📄 *Purchase Order dibuat:* `{po['po_number']}`")
+        lines.append(f"📄 *Purchase Order:* `{po['po_number']}`")
         lines.append(f"⏱️ ETA: {po['eta_estimate']}")
         lines.append("")
-        lines.append("→ Selanjutnya: bayar via *DOKU MCP* (akan diintegrasikan) & notify customer waitlist...")
+        lines.append(f"💳 *DOKU Virtual Account Generated*")
+        lines.append(f"🏦 Bank: {po.get('doku_bank', 'BCA')}")
+        lines.append(f"🔢 VA Number: `{po.get('doku_va_number', '-')}`")
+        lines.append(f"💰 Amount: Rp {po['total_amount']:,}")
+        lines.append(f"_(source: {po.get('doku_source', 'doku_mcp')})_")
+        lines.append("")
+        lines.append("→ PO + VA sudah dikirim ke supplier. Selanjutnya notify customer waitlist...")
     
     return "\n".join(lines)
