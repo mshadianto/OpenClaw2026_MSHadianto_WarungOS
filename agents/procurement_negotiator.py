@@ -166,6 +166,56 @@ Output HANYA JSON.
     return decision
 
 
+
+
+# Demo scenario state (toggled via Telegram commands)
+_SCENARIO_FLAGS = {
+    "force_first_supplier_reject": False,
+    "force_payment_fail": False,
+}
+
+
+def set_scenario(flag: str, value: bool) -> None:
+    """Toggle demo scenarios for showcasing edge case handling."""
+    if flag in _SCENARIO_FLAGS:
+        _SCENARIO_FLAGS[flag] = value
+
+
+def get_scenarios() -> dict:
+    return dict(_SCENARIO_FLAGS)
+
+
+def simulate_supplier_response(supplier_id: int, po_number: str) -> dict:
+    """
+    Simulate supplier confirmation/rejection.
+    
+    In real deployment this would be:
+    - Webhook from supplier system
+    - Email confirmation parsing
+    - WhatsApp Business API status
+    
+    For demo: configurable via _SCENARIO_FLAGS for showing autonomy.
+    """
+    if _SCENARIO_FLAGS["force_first_supplier_reject"]:
+        # Reject on first attempt only — clear flag so next attempt succeeds
+        _SCENARIO_FLAGS["force_first_supplier_reject"] = False
+        db.log_agent_action(
+            AGENT_NAME, "supplier_rejected_simulated",
+            {"supplier_id": supplier_id, "po_number": po_number, "reason": "Out of stock"}
+        )
+        return {
+            "confirmed": False,
+            "supplier_id": supplier_id,
+            "reason": "Supplier menolak: Stok ayam fillet kosong untuk volume ini, sedang restocking",
+        }
+    
+    db.log_agent_action(
+        AGENT_NAME, "supplier_confirmed",
+        {"supplier_id": supplier_id, "po_number": po_number}
+    )
+    return {"confirmed": True, "supplier_id": supplier_id}
+
+
 def generate_purchase_order(supplier_id: int, supplier_name: str, items_with_qty: dict, total_cost: int) -> dict:
     """
     Create PO record + invoke DOKU MCP to generate Virtual Account for B2B payment.

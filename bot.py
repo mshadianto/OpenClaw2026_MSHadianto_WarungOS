@@ -113,6 +113,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def scenario_reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger: next /restock will have supplier #1 reject, forcing fallback."""
+    from agents import procurement_negotiator
+    procurement_negotiator.set_scenario("force_first_supplier_reject", True)
+    await update.message.reply_text(
+        "Scenario armed: Supplier Rejection\n\n"
+        "Pada /restock berikutnya, supplier pertama akan menolak order. "
+        "Agent akan autonomously fallback ke supplier kedua.\n\n"
+        "Jalankan: /restock"
+    )
+
+
+async def scenario_payfail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger: next /restock will simulate payment service failure."""
+    from agents import procurement_negotiator
+    procurement_negotiator.set_scenario("force_payment_fail", True)
+    await update.message.reply_text(
+        "Scenario armed: Payment Failure\n\n"
+        "Pada /restock berikutnya, DOKU payment akan disimulasikan gagal di semua channel.\n"
+        "Agent akan escalate ke owner.\n\n"
+        "Jalankan: /restock"
+    )
+
+
+async def scenarios_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current scenario flags status."""
+    from agents import procurement_negotiator
+    flags = procurement_negotiator.get_scenarios()
+    lines = ["Active Scenario Flags:", ""]
+    for k, v in flags.items():
+        status = "ARMED" if v else "off"
+        lines.append(f"  - {k}: {status}")
+    lines.append("")
+    lines.append("Commands:")
+    lines.append("/scenario_reject - arm supplier rejection")
+    lines.append("/scenario_payfail - arm payment failure")
+    lines.append("/scenario_clear - clear all flags")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def scenario_clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all scenario flags."""
+    from agents import procurement_negotiator
+    for k in procurement_negotiator.get_scenarios():
+        procurement_negotiator.set_scenario(k, False)
+    await update.message.reply_text("✅ Semua scenario flags di-clear.")
+
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Receive shelf photo, run Vision OCR, then auto-trigger restock workflow.
@@ -183,6 +233,10 @@ def main():
     app.add_handler(CommandHandler("restock", restock_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
+    app.add_handler(CommandHandler("scenarios", scenarios_cmd))
+    app.add_handler(CommandHandler("scenario_reject", scenario_reject_cmd))
+    app.add_handler(CommandHandler("scenario_payfail", scenario_payfail_cmd))
+    app.add_handler(CommandHandler("scenario_clear", scenario_clear_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     

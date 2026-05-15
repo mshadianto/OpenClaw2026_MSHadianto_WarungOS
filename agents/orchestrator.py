@@ -52,22 +52,33 @@ async def run_full_restock_workflow(send_telegram_message):
     excluded_suppliers = []
     decision = None
     po = None
+    confirmation = None
     
-    # Try up to 3 suppliers (edge case: rejection/payment fail fallback)
+    # Try up to 3 suppliers (edge case: rejection fallback chain)
     for attempt in range(3):
+        if attempt > 0:
+            await send_telegram_message(
+                f"\n_🔄 Attempt {attempt + 1}: mencari supplier alternatif..._\n"
+                f"_Excluded: {len(excluded_suppliers)} supplier sebelumnya_"
+            )
+        
         decision = await asyncio.to_thread(
             procurement_negotiator.select_best_supplier,
             critical, quantities_needed, excluded_suppliers
         )
         
         if "error" in decision:
-            await send_telegram_message(f"⚠️ Negotiator: {decision['error']}")
-            summary["outcome"] = "no_supplier_available"
+            await send_telegram_message(
+                f"🚨 *Escalation ke Owner:*\n"
+                f"{decision['error']}\n\n"
+                f"Sudah coba {attempt} supplier, semua tidak tersedia. "
+                f"Mohon intervensi manual untuk restock {', '.join(critical)}."
+            )
+            summary["outcome"] = "escalated_no_supplier"
             return summary
         
         supplier_id = decision["selected_supplier_id"]
         
-        # Simulate: supplier accepts (in real demo we'll add rejection simulation toggle)
         po = await asyncio.to_thread(
             procurement_negotiator.generate_purchase_order,
             supplier_id,
@@ -77,7 +88,37 @@ async def run_full_restock_workflow(send_telegram_message):
         )
         
         await send_telegram_message(procurement_negotiator.format_for_telegram(decision, po))
-        break
+        
+        # Check supplier response (simulated in demo)
+        confirmation = await asyncio.to_thread(
+            procurement_negotiator.simulate_supplier_response,
+            supplier_id, po["po_number"]
+        )
+        
+        if confirmation["confirmed"]:
+            await send_telegram_message(
+                f"✅ *Supplier confirmed* PO `{po['po_number']}`.\n"
+                f"_{decision['selected_supplier_name']} accepted the order._"
+            )
+            break
+        else:
+            await send_telegram_message(
+                f"❌ *Supplier ditolak.*\n"
+                f"🧠 Alasan: _{confirmation['reason']}_\n\n"
+                f"_Agent autonomously selecting next-best supplier..._"
+            )
+            excluded_suppliers.append(supplier_id)
+            decision = None
+            po = None
+            continue
+    
+    if not po or not confirmation or not confirmation.get("confirmed"):
+        await send_telegram_message(
+            f"🚨 *Escalation:* Semua {len(excluded_suppliers)} supplier yang dicoba menolak. "
+            f"Workflow di-pause, mohon intervensi owner."
+        )
+        summary["outcome"] = "escalated_all_rejected"
+        return summary
     
     summary["agents_ran"].append("procurement_negotiator")
     summary["decision"] = decision
